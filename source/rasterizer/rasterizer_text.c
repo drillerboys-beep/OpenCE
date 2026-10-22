@@ -100,13 +100,9 @@ void text_hires_register_atlas(unsigned long const *texture, unsigned long width
 
 enum
 {
-	/* port: 512x512 and 1024 cells (the Xbox's 128x128 and 256 held some 50
-	Hangul glyphs, and a screen of Korean text overwrote glyphs it was still
-	drawing: "font cache overwrote character in use"). The count stays a
-	power of two (its indices wrap by masking). */
-	HARDWARE_CHARACTER_CACHE_BITMAP_WIDTH = 512,
-	HARDWARE_CHARACTER_CACHE_BITMAP_HEIGHT = 512,
-	MAXIMUM_HARDWARE_CHARACTERS = 1024,
+	HARDWARE_CHARACTER_CACHE_BITMAP_WIDTH = 128,
+	HARDWARE_CHARACTER_CACHE_BITMAP_HEIGHT = 128,
+	MAXIMUM_HARDWARE_CHARACTERS = 256,
 	/* port: the high-res text atlas's placeholder (its texels are the units
 	of the atlas's glyphs), and the fonts remembered */
 	HIRES_TEXT_ATLAS_BITMAP_SIZE = 256,
