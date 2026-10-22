@@ -47,6 +47,12 @@ tag's letter_widths (TEXT_HIRES_FIT_LETTERS of them, 0 for a letter the tag
 has not), its glyphs rasterized with oversample times the display's pixels
 (for text drawn scaled up); -1 if none, or display.high_res_text is off */
 long text_hires_font(char const *tag_name, float cap_height, short const *letter_widths, float oversample);
+/* port: the font's Hangul fitted to the tag's: the tag's Hangul syllable's ink
+from ink_top to ink_bottom (units of the 480 lines, downwards from the
+baseline) and its advance width units; the font's Hangul (syllables and
+jamo) is then sized, moved and narrowed to match, its Latin left as fitted
+to the capitals */
+void text_hires_font_fit_hangul(long font, float ink_top, float ink_bottom, float width);
 /* whether the font has a glyph for the character (it draws a string only
 if it has all of its characters) */
 int text_hires_covers(long font, unsigned long code);

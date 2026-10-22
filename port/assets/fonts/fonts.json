@@ -1,8 +1,9 @@
 {
- "comment": "Which font draws each of the maps' font tags (port/linux/src/text_hires.c).",
+ "comment": "Which font draws each of the maps' font tags (port/linux/src/text_hires.c). \"*\" draws every tag not listed. Korean build: G마켓 산스 (Medium for small text, Bold for large_ui and interstate).",
  "fonts": [
-  {"tag": "ui\\large_ui", "file": "Overpass-900.ttf"},
-  {"tag": "ui\\interstate", "file": "Overpass-900.ttf"},
-  {"tag": "ui\\small_ui", "file": "Overpass-750.ttf"}
+  {"tag": "ui\\large_ui", "file": "GmarketSansBold.otf"},
+  {"tag": "ui\\interstate", "file": "GmarketSansBold.otf"},
+  {"tag": "ui\\small_ui", "file": "GmarketSansMedium.otf"},
+  {"tag": "*", "file": "GmarketSansMedium.otf"}
  ]
 }

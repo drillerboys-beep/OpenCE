@@ -92,6 +92,7 @@ struct text_hires_glyph
 int text_hires_enabled(void); /* port: port/linux/src/text_hires.c */
 long text_hires_font(char const *tag_name, float cap_height, short const *letter_widths, float oversample);
 int text_hires_covers(long font, unsigned long code);
+void text_hires_font_fit_hangul(long font, float ink_top, float ink_bottom, float width);
 int text_hires_glyph(long font, unsigned long code, struct text_hires_glyph *glyph);
 void text_hires_register_atlas(unsigned long const *texture, unsigned long width, unsigned long height);
 
@@ -99,9 +100,13 @@ void text_hires_register_atlas(unsigned long const *texture, unsigned long width
 
 enum
 {
-	HARDWARE_CHARACTER_CACHE_BITMAP_WIDTH = 128,
-	HARDWARE_CHARACTER_CACHE_BITMAP_HEIGHT = 128,
-	MAXIMUM_HARDWARE_CHARACTERS = 256,
+	/* port: 512x512 and 1024 cells (the Xbox's 128x128 and 256 held some 50
+	Hangul glyphs, and a screen of Korean text overwrote glyphs it was still
+	drawing: "font cache overwrote character in use"). The count stays a
+	power of two (its indices wrap by masking). */
+	HARDWARE_CHARACTER_CACHE_BITMAP_WIDTH = 512,
+	HARDWARE_CHARACTER_CACHE_BITMAP_HEIGHT = 512,
+	MAXIMUM_HARDWARE_CHARACTERS = 1024,
 	/* port: the high-res text atlas's placeholder (its texels are the units
 	of the atlas's glyphs), and the fonts remembered */
 	HIRES_TEXT_ATLAS_BITMAP_SIZE = 256,
@@ -210,6 +215,9 @@ static void rasterizer_draw_character_with_dropshadow(
 static long hires_text_font_get(
 	long font_index,
 	real oversample);
+static void hires_text_report_fallback(
+	long font_index,
+	unsigned long code);
 static void rasterizer_text_draw_scaled_character(
 	struct dynamic_screen_vertex const *vertices);
 static void rasterizer_draw_hires_character(
@@ -483,6 +491,7 @@ rasterizer_draw_string(
 				{
 					if (!text_hires_covers(hires_text_font, (unsigned char)string[character_index]))
 					{
+						hires_text_report_fallback(draw_string_get_font(), (unsigned char)string[character_index]);
 						hires_text_font = NONE;
 						break;
 					}
@@ -614,6 +623,7 @@ rasterizer_draw_unicode_string(
 				{
 					if (!text_hires_covers(hires_text_font, (word)string[character_index]))
 					{
+						hires_text_report_fallback(draw_string_get_font(), (word)string[character_index]);
 						hires_text_font = NONE;
 						break;
 					}
@@ -809,6 +819,40 @@ static void rasterizer_text_draw_scaled_character(
 /* port: the high-res text's font for a font tag, sized by the height of its
 capital H (its rows with ink) and fitted to the widths of its letters, its
 glyphs drawn with oversample times the pixels (for text scaled up), or NONE */
+/* port: why a string fell back from the high-res font to the tag's bitmap
+glyphs, written once each to debug.txt (a tag with no font in fonts.json, or a
+character the font has not) */
+static void hires_text_report_fallback(
+	long font_index,
+	unsigned long code)
+{
+	static long reported_tags[32];
+	static unsigned long reported_codes[256];
+	static short reported_tag_count = 0;
+	static short reported_code_count = 0;
+	short index;
+
+	if (font_index == NONE || !text_hires_enabled())
+		return;
+	if (code == (unsigned long)NONE)
+	{
+		for (index = 0; index < reported_tag_count; index++)
+			if (reported_tags[index] == font_index)
+				return;
+		if (reported_tag_count < 32)
+			reported_tags[reported_tag_count++] = font_index;
+		error(_error_log, "high-res text: font tag '%s' has no font in fonts.json", tag_get_name(font_index));
+		return;
+	}
+	for (index = 0; index < reported_code_count; index++)
+		if (reported_codes[index] == code)
+			return;
+	if (reported_code_count >= 256)
+		return;
+	reported_codes[reported_code_count++] = code;
+	error(_error_log, "high-res text: U+%04lX missing from the font of '%s'", code, tag_get_name(font_index));
+}
+
 static long hires_text_font_get(
 	long font_index,
 	real oversample)
@@ -866,6 +910,51 @@ static long hires_text_font_get(
 		text_hires_font(tag_get_name(font_index), (float)(bottom - top + 1), letter_widths, (float)oversample);
 	if (hires_font < 0)
 		hires_font = NONE;
+	/* port: the font's Hangul sized and placed as the tag's (가, else 한):
+	its ink's rows, from the baseline (bitmap_origin_y rows down its bitmap) */
+	if (hires_font != NONE)
+	{
+		static word const hangul_samples[] = { 0xAC00, 0xD55C };
+		short sample;
+
+		for (sample = 0; sample < NUMBEROF(hangul_samples); sample++)
+		{
+			struct font_character *hangul = font_get_character_by_ascii_code(font, hangul_samples[sample]);
+			short ink_top = NONE;
+			short ink_bottom = NONE;
+
+			if (!hangul || hangul->bitmap_width <= 0 || hangul->bitmap_height <= 0)
+				continue;
+			{
+				byte const *pixels = (byte const *)font->pixels.address + hangul->pixels_offset;
+
+				for (row = 0; row < hangul->bitmap_height; row++)
+				{
+					short column;
+
+					for (column = 0; column < hangul->bitmap_width; column++)
+					{
+						if (pixels[row * hangul->bitmap_width + column])
+						{
+							if (ink_top == NONE)
+								ink_top = row;
+							ink_bottom = row;
+							break;
+						}
+					}
+				}
+			}
+			if (ink_top == NONE)
+				continue;
+			text_hires_font_fit_hangul(hires_font,
+				(float)(ink_top - hangul->bitmap_origin_y),
+				(float)(ink_bottom + 1 - hangul->bitmap_origin_y),
+				(float)hangul->character_width);
+			break;
+		}
+	}
+	if (hires_font == NONE)
+		hires_text_report_fallback(font_index, (unsigned long)NONE);
 	hires_text_fonts[hires_text_next_font].font = font;
 	hires_text_fonts[hires_text_next_font].oversample = oversample;
 	hires_text_fonts[hires_text_next_font].hires_font = hires_font;

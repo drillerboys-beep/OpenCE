@@ -52,7 +52,22 @@ static struct
 	float narrowing;
 	/* how many times the display's pixels its glyphs are rasterized with */
 	float oversample;
+	/* port: units its glyphs are moved down by, so that its capitals stand
+	on the baseline (a font whose 'H' reaches below it, as G마켓 산스 does) */
+	float baseline_shift;
+	/* port: its Hangul's, fitted to the tag's Hangul (text_hires_font_fit_hangul) */
+	int hangul_fitted;
+	float hangul_scale;
+	float hangul_narrowing;
+	float hangul_shift;
 } fonts[MAXIMUM_FONTS];
+
+/* port: Hangul syllables, jamo and compatibility jamo */
+static int is_hangul(unsigned long code)
+{
+	return (code >= 0xAC00 && code <= 0xD7A3) || (code >= 0x1100 && code <= 0x11FF) ||
+		(code >= 0x3130 && code <= 0x318F);
+}
 static long font_count;
 
 static struct
@@ -155,13 +170,28 @@ long text_hires_font(char const *tag_name, float cap_height, short const *letter
 	fonts[font].scale = 0.0f;
 	fonts[font].narrowing = 1.0f;
 	fonts[font].oversample = oversample;
-	for (index = 0; index < text_hires_embedded_count; index++)
+	fonts[font].baseline_shift = 0.0f;
+	fonts[font].hangul_fitted = 0;
+	{
+		/* port: the tag's own entry, or else the entry for every tag ("*") */
+		int has_own = 0;
+
+		for (index = 0; index < text_hires_embedded_count; index++)
+			if (text_hires_embedded[index].tag && !names_differ(text_hires_embedded[index].tag, tag_name))
+				has_own = 1;
+		for (index = 0; index < text_hires_embedded_count; index++)
+		{
+			const struct text_hires_embedded *embedded = &text_hires_embedded[index];
+
+			if (embedded->tag && (has_own ? !names_differ(embedded->tag, tag_name) : !strcmp(embedded->tag, "*")))
+				break;
+		}
+	}
+	for (; index < text_hires_embedded_count; index = text_hires_embedded_count)
 	{
 		const struct text_hires_embedded *embedded = &text_hires_embedded[index];
 		const unsigned char *data = (const unsigned char *)embedded->data;
 
-		if (!embedded->tag || names_differ(embedded->tag, tag_name))
-			continue;
 		if (!stbtt_InitFont(&fonts[font].info, data, stbtt_GetFontOffsetForIndex(data, 0)) ||
 			!stbtt_GetCodepointBox(&fonts[font].info, 'H', &x0, &y0, &x1, &y1) || y1 <= y0)
 		{
@@ -169,6 +199,8 @@ long text_hires_font(char const *tag_name, float cap_height, short const *letter
 			break;
 		}
 		fonts[font].scale = cap_height / (float)(y1 - y0);
+		/* port: (y0, the bottom of its 'H', is 0 for a font on the baseline) */
+		fonts[font].baseline_shift = (float)y0 * fonts[font].scale;
 		{
 			float tag_width = 0.0f;
 			float font_width = 0.0f;
@@ -194,6 +226,36 @@ long text_hires_font(char const *tag_name, float cap_height, short const *letter
 	return fonts[font].scale > 0.0f ? font : -1;
 }
 
+void text_hires_font_fit_hangul(long font, float ink_top, float ink_bottom, float width)
+{
+	static const int samples[] = { 0xAC00, 0xD55C }; /* 가, 한 */
+	int sample;
+
+	/* (fitted once: its glyphs are rasterized only after) */
+	if (font < 0 || font >= font_count || fonts[font].scale <= 0.0f || fonts[font].hangul_fitted ||
+		ink_bottom <= ink_top || width <= 0.0f)
+		return;
+	for (sample = 0; sample < 2; sample++)
+	{
+		int glyph = stbtt_FindGlyphIndex(&fonts[font].info, samples[sample]);
+		int x0, y0, x1, y1, advance = 0, bearing = 0;
+		float scale;
+
+		if (!glyph || !stbtt_GetGlyphBox(&fonts[font].info, glyph, &x0, &y0, &x1, &y1) || y1 <= y0)
+			continue;
+		stbtt_GetGlyphHMetrics(&fonts[font].info, glyph, &advance, &bearing);
+		scale = (ink_bottom - ink_top) / (float)(y1 - y0);
+		fonts[font].hangul_scale = scale;
+		/* (its top, y1 up from the baseline, at the tag's ink_top) */
+		fonts[font].hangul_shift = ink_top + (float)y1 * scale;
+		fonts[font].hangul_narrowing = advance > 0 && advance * scale > width ? width / (advance * scale) : 1.0f;
+		fonts[font].hangul_fitted = 1;
+		platform_log("high-res text: %s Hangul %.1f units tall, %.0f%% wide",
+			fonts[font].tag, ink_bottom - ink_top, fonts[font].hangul_narrowing * 100.0f);
+		return;
+	}
+}
+
 int text_hires_covers(long font, unsigned long code)
 {
 	if (font < 0 || font >= font_count || fonts[font].scale <= 0.0f)
@@ -206,6 +268,7 @@ int text_hires_glyph(long font, unsigned long code, struct text_hires_glyph *gly
 {
 	float scale = halo_screen_pixel_scale();
 	float pixel_scale;
+	float glyph_scale, glyph_narrowing, glyph_shift;
 	unsigned long slot;
 	long probe;
 
@@ -215,6 +278,14 @@ int text_hires_glyph(long font, unsigned long code, struct text_hires_glyph *gly
 		atlas_reset(scale);
 	if (!atlas)
 		return 0;
+	{
+		int hangul = fonts[font].hangul_fitted && is_hangul(code);
+
+		glyph_scale = hangul ? fonts[font].hangul_scale : fonts[font].scale;
+		glyph_narrowing = hangul ? fonts[font].hangul_narrowing : fonts[font].narrowing;
+		/* (y is downwards: a glyph below the baseline is moved up) */
+		glyph_shift = hangul ? fonts[font].hangul_shift : fonts[font].baseline_shift;
+	}
 	slot = ((unsigned long)font * 2654435761UL ^ code * 40503UL) & (GLYPH_CACHE_SIZE - 1);
 	for (probe = 0; probe < GLYPH_CACHE_SIZE; probe++, slot = (slot + 1) & (GLYPH_CACHE_SIZE - 1))
 	{
@@ -229,8 +300,8 @@ int text_hires_glyph(long font, unsigned long code, struct text_hires_glyph *gly
 	if (glyphs[slot].font == -1)
 	{
 		/* rasterized now */
-		float pixels = fonts[font].scale * scale * fonts[font].oversample;
-		float pixels_x = pixels * fonts[font].narrowing;
+		float pixels = glyph_scale * scale * fonts[font].oversample;
+		float pixels_x = pixels * glyph_narrowing;
 		int index = stbtt_FindGlyphIndex(&fonts[font].info, (int)code);
 		int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
 		int width, height, advance = 0, bearing = 0;
@@ -273,7 +344,7 @@ int text_hires_glyph(long font, unsigned long code, struct text_hires_glyph *gly
 		glyphs[slot].height = (short)(width > 0 && height > 0 ? height : 0);
 		glyphs[slot].left = (short)x0;
 		glyphs[slot].top = (short)y0;
-		glyphs[slot].advance = advance * fonts[font].scale * fonts[font].narrowing;
+		glyphs[slot].advance = advance * glyph_scale * glyph_narrowing;
 		if (width > 0 && height > 0)
 		{
 			pack_x += width + 2 * ATLAS_PADDING;
@@ -285,9 +356,9 @@ int text_hires_glyph(long font, unsigned long code, struct text_hires_glyph *gly
 		return 0;
 	pixel_scale = scale * fonts[font].oversample;
 	glyph->left = glyphs[slot].left / pixel_scale;
-	glyph->top = glyphs[slot].top / pixel_scale;
+	glyph->top = glyphs[slot].top / pixel_scale + glyph_shift;
 	glyph->right = (glyphs[slot].left + glyphs[slot].width) / pixel_scale;
-	glyph->bottom = (glyphs[slot].top + glyphs[slot].height) / pixel_scale;
+	glyph->bottom = (glyphs[slot].top + glyphs[slot].height) / pixel_scale + glyph_shift;
 	glyph->advance = glyphs[slot].advance;
 	glyph->u0 = (float)glyphs[slot].x * placeholder_width / ATLAS_SIZE;
 	glyph->v0 = (float)glyphs[slot].y * placeholder_height / ATLAS_SIZE;
